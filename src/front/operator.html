@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Orders</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.0/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+    <style>
+        .order-card {
+            border: 1px solid #ccc;
+            margin-bottom: 10px;
+            padding: 10px;
+            cursor: grab;
+            background-color: #f8f9fa;
+        }
+        .order-card.dragging {
+            opacity: 0.5;
+        }
+        .card-body {
+            min-height: 400px;
+        }
+        .card-body.drag-over {
+            border: 2px dashed #000;
+        }
+    </style>
+</head>
+<body>
+<div class="container mt-5">
+    <h1 class="text-center mb-4">Orders</h1>
+    <div class="row">
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    Created
+                </div>
+                <div class="card-body" id="created-orders">
+                    <!-- Yaratilgan buyurtmalar bu yerga qo'shiladi -->
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header bg-warning text-white">
+                    In Progress
+                </div>
+                <div class="card-body" id="in-progress-orders">
+                    <!-- Jarayondagi buyurtmalar bu yerga qo'shiladi -->
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    Completed
+                </div>
+                <div class="card-body" id="completed-orders">
+                    <!-- Tugallangan buyurtmalar bu yerga qo'shiladi -->
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let stompClient;
+
+    function connectWebSocket() {
+        const socket = new SockJS('http://localhost:8080/ws-orders');
+        stompClient = Stomp.over(socket);
+        stompClient.connect({}, function (frame) {
+            console.log('Ulandi: ' + frame);
+            stompClient.subscribe('/topic/orders', function (messageOutput) {
+                const order = JSON.parse(messageOutput.body);
+                updateOrderStatus(order);
+            });
+
+            // Dastlab barcha buyurtmalarni olish
+            fetch('http://localhost:8080/api/orders')
+                .then(response => response.json())
+                .then(orders => {
+                    orders.forEach(order => {
+                        updateOrderStatus(order);
+                    });
+                })
+                .catch(error => console.error('Buyurtmalarni olishda xatolik:', error));
+        });
+    }
+
+    function updateOrderStatus(order) {
+        let existingOrderElement = document.querySelector(`.order-card[data-order-id="${order.id}"]`);
+        if (existingOrderElement) {
+            existingOrderElement.parentElement.removeChild(existingOrderElement);
+        }
+
+        const orderElement = document.createElement('div');
+        orderElement.classList.add('order-card');
+        orderElement.setAttribute('data-order-id', order.id);
+        orderElement.setAttribute('draggable', true);
+
+        // Order malumotlari
+        const userInfo = `Foydalanuvchi ID: ${order.user.id}, Chat ID: ${order.user.chatId}`;
+        const orderProductsInfo = order.orderProducts.map(product => {
+            return `Mahsulot: ${product.product.name}, Narx: ${product.product.price}, Miqdor: ${product.amount}`;
+        }).join('<br>');
+
+        const orderStatusInfo = `Status: ${order.orderStatus}`;
+        const createdAtInfo = `Yaratilgan vaqti: ${order.createdAt}`;
+
+        orderElement.innerHTML = `
+        <p>Buyurtma ID: ${order.id}</p>
+        <p>${userInfo}</p>
+        <p>${orderProductsInfo}</p>
+        <p>${orderStatusInfo}</p>
+        <p>${createdAtInfo}</p>
+    `;
+
+        if (order.orderStatus === 'CREATED') {
+            document.getElementById('created-orders').appendChild(orderElement);
+        } else if (order.orderStatus === 'IN_PROGRESS') {
+            document.getElementById('in-progress-orders').appendChild(orderElement);
+        } else if (order.orderStatus === 'COMPLETED') {
+            document.getElementById('completed-orders').appendChild(orderElement);
+        }
+
+        makeOrderDraggable(orderElement);
+    }
+
+
+
+    function makeOrderDraggable(orderElement) {
+        orderElement.addEventListener('dragstart', function (e) {
+            e.dataTransfer.setData('text/plain', orderElement.getAttribute('data-order-id'));
+            e.dataTransfer.effectAllowed = 'move';
+            orderElement.classList.add('dragging');
+        });
+
+        orderElement.addEventListener('dragend', function (e) {
+            orderElement.classList.remove('dragging');
+        });
+    }
+
+    document.querySelectorAll('.card-body').forEach(column => {
+        column.addEventListener('dragover', function (e) {
+            e.preventDefault();
+            column.classList.add('drag-over');
+        });
+
+        column.addEventListener('dragleave', function (e) {
+            column.classList.remove('drag-over');
+        });
+
+        column.addEventListener('drop', function (e) {
+            e.preventDefault();
+            column.classList.remove('drag-over');
+            const orderId = e.dataTransfer.getData('text/plain');
+            const targetColumnId = column.id;
+
+            const orderElement = document.querySelector(`.order-card[data-order-id="${orderId}"]`);
+            const currentColumnId = orderElement.parentElement.id;
+
+            // Faqat o'ng tomonga ko'chirishga ruxsat beriladi
+            if ((currentColumnId === 'created-orders' && targetColumnId === 'in-progress-orders') ||
+                (currentColumnId === 'in-progress-orders' && targetColumnId === 'completed-orders')) {
+                if (orderElement && column !== orderElement.parentElement) {
+                    orderElement.parentElement.removeChild(orderElement);
+                    column.appendChild(orderElement);
+                    updateOrderStatusOnServer(orderId, targetColumnId);
+                }
+            }
+        });
+    });
+
+    function updateOrderStatusOnServer(orderId, targetColumnId) {
+        let endpoint = '';
+        if (targetColumnId === 'created-orders') {
+            endpoint = `http://localhost:8080/api/orders/${orderId}/created`;
+        } else if (targetColumnId === 'in-progress-orders') {
+            endpoint = `http://localhost:8080/api/orders/${orderId}/inProgress`;
+        } else if (targetColumnId === 'completed-orders') {
+            endpoint = `http://localhost:8080/api/orders/${orderId}/completed`;
+        }
+
+        if (endpoint) {
+            fetch(endpoint, {
+                method: 'POST'
+            }).then(response => {
+                if (response.ok) {
+                    console.log(`Buyurtma ${orderId} ${targetColumnId} ga ko'chirildi`);
+                } else {
+                    console.error(`Buyurtma ${orderId} ${targetColumnId} ga ko'chirishda xatolik`);
+                }
+            });
+        }
+    }
+
+    window.onload = function() {
+        connectWebSocket();
+    };
+</script>
+
+</body>
+</html>
