@@ -14,7 +14,7 @@ public class TelegramBot extends TelegramLongPollingBot {
     private final BotService botService;
 
     public TelegramBot(TelegramBotsApi telegramBotsApi, BotService botService) throws TelegramApiException {
-        super("7118887199:AAFho0YQzAPowKGG8XnRmQVe8ZqwuVWgnRE");
+        super("Bot_TOKEn");
         this.botService = botService;
         telegramBotsApi.registerBot(this);
     }
